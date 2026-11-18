@@ -1,0 +1,39 @@
+workspace: /home/smoke01/dev/research/FolderWalk
+coordination:
+  thread: 01a1ee4c-56b0-7d82-bddb-bba1e5d7f7a5
+  writes: [docs, features/folderwalk, README.md, Cargo.toml, Cargo.lock, src/main.rs, rust-toolchain.toml, .github/workflows/check.yml]
+  duties: [integration, documentation, test execution, standards results, final report]
+research:
+  - thread: 01a1ed83-87de-7340-a742-e06c39bc40bb
+    model: gpt-6.2-sol
+    brief: folderwalk-terminal-research
+    writes: []
+  - thread: 01a1ed99-807c-7773-a9d6-ee69b7aeda73
+    model: gpt-6.2-sol
+    brief: folderwalk-oracle-research
+    writes: []
+design_review:
+  original: 01a1ec22-637a-76b3-81e8-4e42e7a03a0b
+  original_result: Approval wait before findings
+  thread: 01a1ed83-87de-7340-a742-e06c39bc40bb
+  model: gpt-6.2-sol
+  writes: []
+  depends_on: reviewed inputs and draft design
+build:
+  terminal_thread: 01a1ec29-3658-70f3-b780-d9dbe1f66ef7
+  model: gpt-6.1-terra
+  terminal_writes: [src/terminal.rs]
+  navigation_owner: 01a1ee4c-56b0-7d82-bddb-bba1e5d7f7a5
+  navigation_writes: [src/navigation.rs]
+  depends_on: design review and resolutions
+independent_tests:
+  thread: 01a1e9d2-95f3-7111-9c04-470eef2840ec
+  model: gpt-6.1-terra
+  writes: []
+  delivery: Return test source through the session reply for the coordinator to integrate verbatim.
+  depends_on: final requirements and interface after the build
+workflow_checks:
+  plan: Accepted by szflow-plan after using the version 3 schema.
+  team: The installed team validator refused this board-backed record because it expects the older team schema. Its slot model requires distinct models and separate worktrees. This run used independent sessions and one writer per shared file as requested.
+  build_order: The accepted review-test-and-fix decision places final requirements and independent test writing after the build.
+  pickup: Four distinct sessions confirmed pickup across research, review, implementation and test writing. The first reviewer also picked up before blocking.
