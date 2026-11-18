@@ -1,0 +1,10 @@
+[package]
+name = "folderwalk"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+description = "A small terminal directory browser for students learning Rust"
+
+[dependencies]
+rustix = { version = "=1.1.6", features = ["event", "termios"] }
+unicode-width = "=0.2.2"

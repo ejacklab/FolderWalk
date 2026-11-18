@@ -1,0 +1,28 @@
+name: Linux checks
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Install the declared toolchain
+        run: rustup show
+      - name: Verify formatting
+        run: cargo fmt --all --check
+      - name: Build all Cargo targets
+        run: cargo build --locked --all-targets
+      - name: Check Rust lints
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Run Cargo tests
+        run: cargo test --locked
+      - name: Exercise the terminal application
+        run: python3 tests/terminal_test.py target/debug/folderwalk
+      - name: Build documentation
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps
