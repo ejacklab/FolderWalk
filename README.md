@@ -78,3 +78,7 @@ See the [requirements](docs/requirements.md), [design](docs/design.md), and
 [test report](docs/test-report.md). FolderWalk also exercises five Rust
 standards plugins. The [local setup](docs/local-standards.md) and
 [standards results](docs/standards-results.md) document that work.
+
+## License
+
+FolderWalk is available under the [MIT License](LICENSE).
