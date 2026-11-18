@@ -1,15 +1,90 @@
+use std::env;
 use std::io::{self, IsTerminal, Write};
-use std::path::Path;
 use std::time::{Duration, Instant};
 
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::termios::{OptionalActions, Termios, tcgetattr, tcgetwinsize, tcsetattr};
-use unicode_width::UnicodeWidthChar;
 
-use crate::navigation::{Directory, EntryKind};
+mod browser;
+mod view;
+
+use crate::live::Live;
+use crate::navigation::Directory;
+use browser::Browser;
 
 const PASTE_START: &[u8] = b"\x1b[200~";
 const PASTE_END: &[u8] = b"\x1b[201~";
+
+struct Palette {
+    path: &'static str,
+    directory: &'static str,
+    selection: &'static str,
+    editor: &'static str,
+    link: &'static str,
+    error: &'static str,
+    edited: &'static str,
+    quiet: &'static str,
+}
+
+impl Palette {
+    const PLAIN: Self = Self {
+        path: "",
+        directory: "",
+        selection: "",
+        editor: "",
+        link: "",
+        error: "",
+        edited: "",
+        quiet: "",
+    };
+
+    const CYAN: Self = Self {
+        path: "\x1b[1;36m",
+        directory: "\x1b[36m",
+        selection: "\x1b[1;7m",
+        editor: "\x1b[1;32m",
+        link: "\x1b[35m",
+        error: "\x1b[1;31m",
+        edited: "\x1b[1;33m",
+        quiet: "\x1b[2m",
+    };
+
+    const GREEN: Self = Self {
+        path: "\x1b[1;32m",
+        directory: "\x1b[32m",
+        selection: "\x1b[1;30;42m",
+        ..Self::CYAN
+    };
+
+    const BLUE: Self = Self {
+        path: "\x1b[1;94m",
+        directory: "\x1b[94m",
+        selection: "\x1b[1;97;44m",
+        editor: "\x1b[1;94m",
+        ..Self::CYAN
+    };
+
+    const MIXED: Self = Self {
+        directory: Self::GREEN.directory,
+        selection: Self::BLUE.selection,
+        ..Self::CYAN
+    };
+
+    fn from_environment() -> Self {
+        if env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty())
+            || env::var("TERM").as_deref() == Ok("dumb")
+        {
+            return Self::PLAIN;
+        }
+
+        match env::var("FOLDERWALK_THEME").as_deref() {
+            Ok("green") => Self::GREEN,
+            Ok("blue") => Self::BLUE,
+            Ok("mixed") => Self::MIXED,
+            _ => Self::CYAN,
+        }
+    }
+}
 
 struct Session {
     saved: Termios,
@@ -65,6 +140,12 @@ enum Event {
     Down,
     Left,
     Right,
+    NextFolder,
+    PreviousFolder,
+    PageUp,
+    PageDown,
+    Home,
+    End,
     Enter,
     Backspace,
     Escape,
@@ -142,11 +223,20 @@ impl Decoder {
                 b"\x1b[B" => Some(Event::Down),
                 b"\x1b[C" => Some(Event::Right),
                 b"\x1b[D" => Some(Event::Left),
+                b"\x1b[Z" => Some(Event::PreviousFolder),
+                b"\x1b[5~" => Some(Event::PageUp),
+                b"\x1b[6~" => Some(Event::PageDown),
+                b"\x1b[H" | b"\x1b[1~" => Some(Event::Home),
+                b"\x1b[F" | b"\x1b[4~" => Some(Event::End),
                 _ => self.next(),
             };
         }
         self.escape_started = None;
         let event = match first {
+            b'\t' => {
+                self.pending.remove(0);
+                Event::NextFolder
+            }
             3 => {
                 self.pending.remove(0);
                 Event::Interrupt
@@ -186,222 +276,6 @@ impl Decoder {
     }
 }
 
-struct Browser {
-    directory: Directory,
-    selected: usize,
-    scroll: usize,
-    editing: bool,
-    text: String,
-    diagnostic: String,
-}
-
-impl Browser {
-    fn new(directory: Directory) -> Self {
-        Self {
-            directory,
-            selected: 0,
-            scroll: 0,
-            editing: false,
-            text: String::new(),
-            diagnostic: String::new(),
-        }
-    }
-
-    fn reset_selection(&mut self) {
-        self.selected = 0;
-        self.scroll = 0;
-    }
-
-    fn navigate(&mut self, path: &Path) {
-        match self.directory.go(path) {
-            Ok(()) => {
-                self.reset_selection();
-                self.editing = false;
-                self.diagnostic.clear();
-            }
-            Err(error) => self.diagnostic = error.to_string(),
-        }
-    }
-
-    fn handle(&mut self, event: Event) -> bool {
-        if matches!(event, Event::Interrupt) {
-            return false;
-        }
-        if let Event::Paste(text) = event {
-            if !self.editing {
-                self.text.clear();
-            }
-            self.editing = true;
-            if text.chars().any(char::is_control) {
-                self.diagnostic = "Enter a single path without control characters".into();
-            } else {
-                self.text.push_str(&text);
-                self.diagnostic.clear();
-            }
-            return true;
-        }
-        if self.editing {
-            match event {
-                Event::Char(character) => self.text.push(character),
-                Event::Backspace => {
-                    self.text.pop();
-                }
-                Event::Escape => {
-                    self.editing = false;
-                    self.diagnostic.clear();
-                }
-                Event::Enter => {
-                    let text = self.text.clone();
-                    self.navigate(Path::new(&text));
-                }
-                _ => {}
-            }
-            return true;
-        }
-        match event {
-            Event::Char('q') => return false,
-            Event::Char('g') => {
-                self.editing = true;
-                self.text.clear();
-                self.diagnostic.clear();
-            }
-            Event::Up => self.selected = self.selected.saturating_sub(1),
-            Event::Down => {
-                if self.selected + 1 < self.directory.entries().len() {
-                    self.selected += 1;
-                }
-            }
-            Event::Enter | Event::Right => {
-                if let Some(entry) = self.directory.entries().get(self.selected) {
-                    let name = entry.name().to_os_string();
-                    self.navigate(Path::new(&name));
-                }
-            }
-            Event::Left | Event::Backspace => match self.directory.up() {
-                Ok(()) => {
-                    self.reset_selection();
-                    self.diagnostic.clear();
-                }
-                Err(error) => self.diagnostic = error.to_string(),
-            },
-            _ => {}
-        }
-        true
-    }
-}
-
-fn safe_text(text: &str) -> String {
-    text.chars()
-        .flat_map(|character| {
-            if character.is_control() {
-                character.escape_default().collect::<String>()
-            } else {
-                character.to_string()
-            }
-            .chars()
-            .collect::<Vec<_>>()
-        })
-        .collect()
-}
-
-fn clipped(text: &str, width: usize) -> String {
-    let mut used = 0;
-    text.chars()
-        .take_while(|character| {
-            let columns = character.width().unwrap_or(0);
-            if used + columns > width {
-                false
-            } else {
-                used += columns;
-                true
-            }
-        })
-        .collect()
-}
-
-fn wrapped(text: &str, width: usize) -> Vec<String> {
-    let mut lines = vec![String::new()];
-    let mut used = 0;
-    for character in text.chars() {
-        let columns = character.width().unwrap_or(0);
-        if used + columns > width && used > 0 {
-            lines.push(String::new());
-            used = 0;
-        }
-        if columns <= width {
-            lines.last_mut().expect("one line exists").push(character);
-            used += columns;
-        }
-    }
-    lines
-}
-
-fn draw(browser: &mut Browser, rows: usize, columns: usize) -> io::Result<()> {
-    let path = safe_text(&browser.directory.path().to_string_lossy());
-    let header = if columns > 0 {
-        wrapped(&path, columns)
-    } else {
-        Vec::new()
-    };
-    let mut lines = Vec::new();
-    if columns < 4 || rows < header.len() + 3 {
-        lines.push(clipped("Resize terminal to continue", columns));
-    } else {
-        lines.extend(header);
-        let viewport = rows - lines.len() - 2;
-        if browser.selected < browser.scroll {
-            browser.scroll = browser.selected;
-        }
-        if browser.selected >= browser.scroll + viewport {
-            browser.scroll = browser.selected + 1 - viewport;
-        }
-        for (index, entry) in browser
-            .directory
-            .entries()
-            .iter()
-            .enumerate()
-            .skip(browser.scroll)
-            .take(viewport)
-        {
-            let marker = if index == browser.selected {
-                "> "
-            } else {
-                "  "
-            };
-            let suffix = match entry.kind() {
-                EntryKind::Directory => "/",
-                EntryKind::Symlink => "@",
-                EntryKind::Other => "",
-            };
-            let line = format!(
-                "{marker}{}{suffix}",
-                safe_text(&entry.name().to_string_lossy())
-            );
-            lines.push(clipped(&line, columns));
-        }
-        while lines.len() < rows - 2 {
-            lines.push(String::new());
-        }
-        lines.push(clipped(&safe_text(&browser.diagnostic), columns));
-        let footer = if browser.editing {
-            format!("Path: {}", safe_text(&browser.text))
-        } else {
-            "↑/↓ select  Enter open  ← parent  g path  q quit".to_string()
-        };
-        lines.push(clipped(&footer, columns));
-    }
-    let mut frame = String::new();
-    for index in 0..rows {
-        frame.push_str(&format!("\x1b[{};1H\x1b[2K", index + 1));
-        if let Some(line) = lines.get(index) {
-            frame.push_str(line);
-        }
-    }
-    let mut output = io::stdout().lock();
-    output.write_all(frame.as_bytes())?;
-    output.flush()
-}
-
 pub(crate) fn run(directory: Directory) -> io::Result<()> {
     let mut session = Session::start()?;
     let result = run_session(directory);
@@ -411,6 +285,8 @@ pub(crate) fn run(directory: Directory) -> io::Result<()> {
 
 fn run_session(directory: Directory) -> io::Result<()> {
     let input = io::stdin();
+    let palette = Palette::from_environment();
+    let live = Live::new(directory.path())?;
     let mut browser = Browser::new(directory);
     let mut decoder = Decoder::new();
     let timeout = Timespec {
@@ -420,10 +296,13 @@ fn run_session(directory: Directory) -> io::Result<()> {
     let mut previous_size = None;
     let mut redraw = true;
     loop {
+        if let Some(update) = live.try_update() {
+            redraw |= browser.update(update);
+        }
         let size = tcgetwinsize(&input)?;
         let current_size = (usize::from(size.ws_row), usize::from(size.ws_col));
         if redraw || previous_size != Some(current_size) {
-            draw(&mut browser, current_size.0, current_size.1)?;
+            view::draw(&mut browser, current_size.0, current_size.1, &palette)?;
             previous_size = Some(current_size);
             redraw = false;
         }
@@ -432,6 +311,9 @@ fn run_session(directory: Directory) -> io::Result<()> {
                 return Ok(());
             }
             redraw = true;
+        }
+        if std::mem::take(&mut browser.request_scan) {
+            live.show(browser.directory.path());
         }
         if redraw {
             continue;

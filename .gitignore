@@ -1,3 +1,5 @@
 /target/
 /.scratch/
 __pycache__/
+
+/bin/

@@ -1,0 +1,52 @@
+schema: szflow-plan/3
+request:
+  words: "extend each folder will shows max 3 level down"
+  type: new piece
+facts:
+  repository: FolderWalk
+  commit: f77620c
+  size_limit: 8
+  builds_at_once: 3
+assess:
+  chapter_1_answer: not run yet
+  research: "needed: look outside"
+  research_reason: Compare bounded tree output and keyboard focus conventions with FolderWalk's existing controls.
+scope:
+  in:
+    - Preview three descendant levels, navigate visible rows, document the interaction and record real terminal sessions.
+  out:
+    - Publishing a release.
+parts:
+  - name: traversal
+    estimate: 3
+    kind: a new program of our own
+    kind_note: Extend the existing Rust directory snapshot using the standard filesystem API.
+    design: written and reviewed
+    pieces:
+      - name: traversal
+        holds: bounded traversal, relative path identity, and collapse
+        count: 3
+  - name: interface
+    estimate: 3
+    kind: a new program of our own
+    kind_note: Reuse the current terminal decoder, renderer and viewport.
+    design: written and reviewed
+    pieces:
+      - name: interface
+        holds: Space binding, tree rows, and viewport handling
+        count: 3
+  - name: verification
+    estimate: 3
+    kind: mostly an outside tool or library
+    kind_note: Use Cargo, the existing Python terminal harness and Pillow for the recordings.
+    needs_outside: [cargo, python3, Pillow]
+    design: needs no design
+    pieces:
+      - name: verification
+        holds: black-box tests, student documentation, and demo recordings
+        count: 3
+        waits_for: [traversal, interface]
+order:
+  joining_rule: The lead integrates traversal and rendering, then QA verifies the binary and the demo worker records it.
+accept:
+  plan_accepted_by: the COO alone

@@ -12,6 +12,30 @@
 8. Open. Long entry names may exceed the display width while their native values remain usable.
 9. Judged by. Compare the path and entry names with physical Bash and the filesystem. Check memory and time after correctness.
 
+## Preview a folder in the current listing
+
+1. Problem. Let a student inspect a folder's contents while keeping their place among its siblings.
+2. For. A student choosing a nested directory. See the [preview requirement](requirements.md#preview-a-folder-three-levels-deep-from-the-current-directory).
+3. Data. The original directory listing had one row per immediate child. No student usage count was supplied.
+4. Given. The displayed directory, the selected visible row, and the folder's position in the tree.
+5. Wanted. A bounded, navigable preview with the same current path and selected folder.
+6. Rules. Count children as level one. Keep descendants under their parent. Stop after level three. Preserve sibling expansions when folding a branch.
+7. Examples. Expanding course shows week/lab/solutions underneath. Opening solutions reveals its contents. A symlink back to course appears as a single link.
+8. Open. Wide directories can contain many entries even with the depth bound.
+9. Judged by. Compare the visible rows and the selected destination with a real four-deep fixture. No timing or memory target has been set.
+
+## Notice a filesystem change without losing a place in the tree
+
+1. Problem. Show a settled external change while a student is browsing another folder.
+2. For. Someone following work in a local project. See the [live browsing requirements](requirements.md#browse-the-full-preview-and-notice-external-changes-while-moving-between-folders).
+3. Data. The previous terminal refreshed after keyboard input or a resize. Local trials found a same-length write with equal timestamps and an atomic save with a different inode.
+4. Given. The launch path, current path, selected row, saved folds, recent file observations and keyboard input.
+5. Wanted. A current listing, a readable operation and path, and a way to visit that location and return.
+6. Rules. Observe both roots through the preview depth. Keep the first inventory out of activity. Preserve surviving focus. Keep external edits visible in activity while holding the path editor's tree still.
+7. Examples. A save in docs appears while viewing src. Replacing the file at the same path yields an edit. Losing access to a root reports its status and retains the last successful listing.
+8. Open. Network filesystems can deliver different notifications. The activity list represents recently observed states.
+9. Judged by. A second process changes real files while the terminal is idle. Compare the displayed path and operation, then time the visible update.
+
 ## Edit a path while keeping the directory visible
 
 1. Problem. Accept one typed or pasted path while maintaining the browse viewport during edits.

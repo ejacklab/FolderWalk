@@ -5,6 +5,7 @@ import fcntl
 import os
 import pathlib
 import pty
+import re
 import select
 import struct
 import subprocess
@@ -18,18 +19,30 @@ BINARY = pathlib.Path(sys.argv[1]).resolve() if len(sys.argv) == 2 else None
 ROOT = pathlib.Path(os.environ.get('TMPDIR', str(pathlib.Path.home() / '.scratch/tmp')))
 ROOT.mkdir(parents=True, exist_ok=True)
 FIXTURE = pathlib.Path(__import__('tempfile').mkdtemp(prefix='fixture-', dir=ROOT))
-BASE = FIXTURE / 'start'
-CHILD = BASE / 'a child'
-UNICODE = BASE / 'český prostor'
-OUTSIDE = FIXTURE / 'physical parent' / 'target'
-for path in (CHILD, UNICODE, OUTSIDE, BASE / 'other'):
-    path.mkdir(parents=True, exist_ok=True)
-(BASE / '.hidden').write_text('hidden\n', encoding='utf-8')
-(BASE / 'file.txt').write_text('file\n', encoding='utf-8')
-(BASE / 'link').symlink_to(OUTSIDE, target_is_directory=True)
 
 
-def physical(path, cwd=BASE):
+def prepare_fixture(case):
+    global BASE, CHILD, UNICODE, OUTSIDE, BRANCH
+    BASE = case / 'start'
+    CHILD = BASE / 'a child'
+    UNICODE = BASE / 'český prostor'
+    OUTSIDE = case / 'physical parent' / 'target'
+    for path in (CHILD, UNICODE, OUTSIDE, BASE / 'other'):
+        path.mkdir(parents=True, exist_ok=True)
+    (BASE / '.hidden').write_text('hidden\n', encoding='utf-8')
+    (BASE / 'file.txt').write_text('file\n', encoding='utf-8')
+    (BASE / 'link').symlink_to(OUTSIDE, target_is_directory=True)
+
+    # Four directories below the selectable folder put a real entry past the limit.
+    BRANCH = CHILD / 'lab' / 'exercise' / 'solutions'
+    (BRANCH / 'private').mkdir(parents=True)
+    (CHILD / 'lab' / '.readme').write_text('notes\n')
+    (CHILD / 'lab' / 'loop').symlink_to(CHILD, target_is_directory=True)
+    (BASE / 'other' / 'sibling.txt').touch()
+
+
+def physical(path, cwd=None):
+    cwd = BASE if cwd is None else cwd
     env = os.environ.copy()
     env.pop('CDPATH', None)
     result = subprocess.run(['bash', '--noprofile', '--norc', '-c',
@@ -142,7 +155,7 @@ class Screen:
 
 
 class Terminal:
-    def __init__(self):
+    def __init__(self, plain=False):
         self.master, self.slave = pty.openpty()
         fcntl.ioctl(self.slave, termios.TIOCSWINSZ, struct.pack('HHHH', HEIGHT, WIDTH, 0, 0))
         self.before = termios.tcgetattr(self.slave)
@@ -150,6 +163,8 @@ class Terminal:
         self.raw = bytearray()
         env = os.environ.copy()
         env.update({'TERM': 'xterm-256color', 'LC_ALL': 'C.UTF-8'})
+        if plain:
+            env['NO_COLOR'] = '1'
         env.pop('CDPATH', None)
         script = 'printf "SHELL_BEFORE=%s\\n" "$PWD"; "$1"; r=$?; printf "SHELL_AFTER=%s\\n" "$PWD"; exit "$r"'
         self.proc = subprocess.Popen(['bash', '--noprofile', '--norc', '-c', script, 'shell', str(BINARY)],
@@ -157,6 +172,7 @@ class Terminal:
                                      close_fds=True, env=env)
         try:
             self.wait_for(lambda: self.screen.rows()[0] == physical(BASE), 'startup header')
+            self.wait_for(lambda: self.screen.rows()[-3].startswith(('Live', 'Polling')), 'monitor ready', 8)
         except Exception:
             self.close()
             raise
@@ -189,7 +205,7 @@ class Terminal:
         return self.screen.rows()
 
     def path(self): return self.rows()[0]
-    def view(self): return self.rows()[:-2]
+    def view(self): return self.rows()[:-3]
     def entries(self):
         rows = self.rows()[1:-2]
         result = []
@@ -197,8 +213,8 @@ class Terminal:
             if row.startswith('> '): row = row[2:]
             elif row.startswith('  '): row = row[2:]
             else: continue
-            if row.endswith(('/', '@')): row = row[:-1]
-            if row: result.append(row)
+            name = entry_name(row[2:])  # Skip root disclosure or file padding.
+            if name: result.append(name)
         return result
 
     def quit(self, keys=b'q'):
@@ -230,23 +246,34 @@ def submit(term, text):
     term.send(b'\r')
 
 
-def select_name(term, name):
+def entry_name(text):
+    for suffix in ('   + Added', '   ~ Edited', '  (empty)', '  (unavailable)'):
+        text = text.removesuffix(suffix)
+    return text.removesuffix('/').removesuffix('@')
+
+
+def select_name(term, name, depth=0):
     rows = term.rows()[1:-2]
-    indexed = [(i, r[2:].rstrip('/@')) for i, r in enumerate(rows) if r.startswith(('> ', '  ')) and r[2:]]
-    selected = next(i for i, r in enumerate(rows) if r.startswith('> '))
-    target = next(i for i, n in indexed if n == name)
+    selected = next(i for i, row in enumerate(rows) if row.startswith('> '))
+    # Strip the selection, indentation and two-cell disclosure before the name.
+    offset = 2 + 2 * depth + 2
+    target = next(i for i, row in enumerate(rows) if row.startswith(('> ', '  ')) and entry_name(row[offset:]) == name)
     for _ in range(abs(target - selected)):
         term.send(b'\x1b[B' if target > selected else b'\x1b[A')
 
 
 def startup(t):
+    rows = t.view()
+    if not any('solutions/' in row for row in rows) or not any('sibling.txt' in row for row in rows):
+        raise AssertionError(f'Max startup omitted a branch: {rows!r}')
+    t.send(b'm')
     expected = sorted(os.listdir(BASE))
     check_equal(t.path(), physical(BASE), 'full absolute startup path')
     check_equal(sorted(t.entries()), expected, 'entry membership')
     rows = t.rows()[1:-2]
-    if not any(row[2:] == 'a child/' for row in rows if row.startswith(('> ', '  '))):
+    if not any(row[2:] == '▸ a child/' for row in rows if row.startswith(('> ', '  '))):
         raise AssertionError(f'directory marker missing: {rows!r}')
-    if not any(row[2:] == 'link@' for row in rows if row.startswith(('> ', '  '))):
+    if not any(row[2:] == '  link@' for row in rows if row.startswith(('> ', '  '))):
         raise AssertionError(f'symlink marker missing: {rows!r}')
     return f'path={t.path()!r}; entries={sorted(t.entries())!r}'
 
@@ -346,6 +373,327 @@ def paste_control(t):
     return f'no early navigation; error={rows[-2]!r}; editable recovery={t.path()!r}'
 
 
+def tree_depth(t):
+    select_name(t, 'a child')
+    rows = t.rows()
+    root = rows.index('> ▾ a child/')
+    expected = [
+        '> ▾ a child/',
+        '    ▾ lab/',
+        '        .readme',
+        '      ▾ exercise/',
+        '        · solutions/',
+        '        loop@',
+    ]
+    check_equal(rows[root:root + len(expected)], expected, 'expanded rows, levels, order and link')
+    check_equal(t.path(), physical(BASE), 'expand in place')
+    select_name(t, 'solutions', 3)
+    t.send(b' ')
+    check_equal(t.view().count('>       · solutions/'), 1, 'depth-limit directory stays selected')
+    if any('private' in row for row in t.view()):
+        raise AssertionError('fourth-level entry visible')
+    t.send(b'\r')
+    check_equal(t.path(), physical(BRANCH), 'open selected depth-limit directory')
+    check_equal(t.entries(), ['private'], 'navigate beyond old limit')
+    t.send(b'\x7f')
+    check_equal(t.path(), physical(BRANCH.parent), 'physical parent of nested directory')
+    return 'three levels shown, loop remained a link, Enter opened the boundary directory'
+
+
+def tree_collapse(t):
+    t.send(b'm')
+    select_name(t, 'a child')
+    t.send(b' ')
+    select_name(t, 'other')
+    t.send(b' ')
+    select_name(t, 'lab', 1)
+    t.send(b' ')
+    rows = t.view()
+    if '>   ▸ lab/' not in rows or any('exercise/' in row for row in rows):
+        raise AssertionError(f'nested collapse: {rows!r}')
+    t.send(b' ')
+    if not any('solutions/' in row for row in t.view()) or any('private/' in row for row in t.view()):
+        raise AssertionError(f'reopening nested folder changed the depth limit: {t.view()!r}')
+    select_name(t, 'a child')
+    t.send(b' ')
+    rows = t.view()
+    if '> ▸ a child/' not in rows or any('lab/' in row for row in rows):
+        raise AssertionError(f'root collapse: {rows!r}')
+    if not any('sibling.txt' in row for row in rows):
+        raise AssertionError('collapsing a branch also collapsed its sibling')
+    return 'nested and root collapse retained selection and the expanded sibling'
+
+
+def tree_retry(t):
+    select_name(t, 'other')
+    original = BASE / 'other'
+    moved = BASE.parent / 'moved'
+    original.rename(moved)
+    try:
+        t.wait_for(lambda: not any('other/' in row for row in t.screen.rows()[2:-3]),
+                   'missing directory disappears from live tree')
+    finally:
+        moved.rename(original)
+    t.wait_for(lambda: any('sibling.txt' in row for row in t.screen.rows()[2:-3]),
+               'restored directory appears with its child')
+    return 'live tree removed the missing folder and restored its contents on return'
+
+
+def tree_empty_unavailable(t):
+    t.send(b'm')
+    empty = BASE / 'other' / 'empty'
+    locked = BASE / 'other' / 'locked'
+    empty.mkdir()
+    locked.mkdir()
+    (locked / 'hidden-inside').touch()
+    locked.chmod(0)
+    try:
+        select_name(t, 'other')
+        t.send(b' ')
+        rows = t.view()
+        if not any(row.startswith('    ▾ empty/  (empty)') for row in rows) or '      sibling.txt' not in rows:
+            raise AssertionError(f'empty branch or sibling missing: {rows!r}')
+        if os.access(locked, os.R_OK):
+            return 'empty branch and sibling visible; permission check skipped for privileged process'
+        if not any(row.startswith('    ▸ locked/  (unavailable)') for row in rows) or any('hidden-inside' in row for row in rows):
+            raise AssertionError(f'unreadable branch: {rows!r}')
+        select_name(t, 'locked', 1)
+        t.send(b' ')
+        locked.chmod(0o700)
+        t.wait_for(lambda: any('hidden-inside' in row for row in t.screen.rows()[2:-3]),
+                   'unreadable child recovers after permission is restored', 8)
+    finally:
+        locked.chmod(0o700)
+    return 'empty and unreadable folders labelled, sibling visible, unreadable folder retried'
+
+
+def tree_resize_plain(t):
+    select_name(t, 'a child')
+    select_name(t, 'solutions', 3)
+    fcntl.ioctl(t.slave, termios.TIOCSWINSZ, struct.pack('HHHH', 10, 40, 0, 0))
+    t.wait_for(lambda: t.screen.rows()[9].startswith('↑'), 'resize updates the footer')
+    rows = t.screen.rows()[:10]
+    if '>       · solutions/' not in rows or not any('Level 3' in row for row in rows):
+        raise AssertionError(f'selected boundary or hint lost on a narrow screen: {rows!r}')
+    if any(len(row) > 40 for row in rows):
+        raise AssertionError(f'content exceeded 40 columns: {rows!r}')
+    if re.search(rb'\x1b\[[0-9;]*m', t.raw):
+        raise AssertionError('found SGR styling in NO_COLOR output')
+    fcntl.ioctl(t.slave, termios.TIOCSWINSZ, struct.pack('HHHH', HEIGHT, WIDTH, 0, 0))
+    t.wait_for(lambda: t.screen.rows()[0] == physical(BASE), 'restore original width')
+    if '>       · solutions/' not in t.view():
+        raise AssertionError('resizing the terminal lost the selection')
+    return 'plain selection, indentation and boundary remained visible at 40×10 and full width'
+
+
+def tree_scroll(t):
+    t.send(b'm')
+    # Create children after startup so expansion must read the selected directory.
+    for n in range(32):
+        (UNICODE / f'folder-{n:02}').mkdir()
+    select_name(t, UNICODE.name)
+    t.send(b' ')
+    t.send(b'\x1b[B' * 32)
+    if not any(row.startswith('> ') and 'folder-31/' in row for row in t.view()):
+        raise AssertionError(f'selection outside the scrolled viewport: {t.view()!r}')
+    t.send(b'\x1b[C')
+    check_equal(t.path(), physical(UNICODE / 'folder-31'), 'Right opens scrolled nested selection')
+    return 'Down reached the last of 32 descendants and Right opened its physical path'
+
+
+def tree_expand_at_bottom(t):
+    t.send(b'm')
+    shelf = FIXTURE / 'shelf'
+    for index in range(32):
+        (shelf / f'course-{index:02}').mkdir(parents=True)
+    (shelf / 'course-25' / 'lecture.txt').touch()
+    submit(t, str(shelf))
+    t.send(b'\x1b[B' * 25)
+    entries = [row for row in t.view() if row.startswith(('  ', '> '))]
+    check_equal(entries[-1], '> ▸ course-25/', 'selected folder starts at bottom of viewport')
+    t.send(b' ')
+    rows = t.view()
+    index = rows.index('> ▾ course-25/')
+    check_equal(rows[index + 1:index + 2], ['      lecture.txt'], 'first child immediately below focus')
+    return 'expanding the last visible row revealed its child and kept its parent selected'
+
+
+def activity(t, label, path):
+    name = str(path)
+    t.wait_for(lambda: label in t.screen.rows()[-3] and t.screen.rows()[-3].endswith(name),
+               f'{label} activity for {name}', 8)
+
+
+def selected(t):
+    return next(row for row in t.view()[2:] if row.startswith('> '))
+
+
+def live_file_changes(t):
+    t.send(b'c')
+    if not any('Waiting for a file change' in row for row in t.view()):
+        raise AssertionError('startup inventory populated recent changes')
+    t.send(b'\x1b')
+    select_name(t, 'other')
+    path = BASE / '0-lecture'
+    delays = []
+    def observe(label, changed, action):
+        start = time.monotonic()
+        action()
+        activity(t, label, changed.name)
+        delays.append(round((time.monotonic() - start) * 1000))
+    observe('Added', path, lambda: path.write_text('abc'))
+    if not any('0-lecture   + Added' in row for row in t.view()):
+        raise AssertionError('new file has no tree label')
+    if 'other/' not in selected(t):
+        raise AssertionError('inserting before selection moved focus')
+    observe('Edited', path, lambda: path.write_text('def'))
+    if not any('0-lecture   ~ Edited' in row for row in t.view()):
+        raise AssertionError('same-size file edit has no tree label')
+    marker = BASE / 'marker'
+    observe('Added', marker, marker.touch)
+    replacement = BASE.parent / 'replacement'
+    replacement.write_text('ghi')
+    observe('Edited', path, lambda: replacement.replace(path))
+    t.send(b'c')
+    rows = t.view()
+    records = [row for row in rows[2:] if row.endswith('0-lecture')]
+    check_equal(len(records), 1, 'two edits produce a single path record')
+    if not records[0].startswith('> ') or 'Edited' not in records[0]:
+        raise AssertionError(f'most recent atomic save not selected: {records!r}')
+    t.send(b'\r')
+    t.wait_for(lambda: any(row.startswith('> ') and '0-lecture' in row for row in t.screen.rows()[2:-3]),
+               'reveal selected file')
+    observe('Removed', path, lambda: path.rename(BASE.parent / 'archived'))
+    if any('0-lecture' in row for row in t.view()[2:]):
+        raise AssertionError('removed entry still in tree')
+    return f'visible activity delay in milliseconds for add, save, add, replace, remove: {delays}'
+
+
+def live_navigation(t):
+    t.send(b'\t')
+    if 'a child/' not in selected(t): raise AssertionError('Tab missed first folder')
+    t.send(b' ')
+    t.send(b'\t')
+    if 'other/' not in selected(t): raise AssertionError('Tab missed next top-level folder')
+    t.send(b'\x1b[Z')
+    if 'a child/' not in selected(t): raise AssertionError('Shift+Tab missed previous folder')
+    t.send(b'\t\r')
+    t.wait_for(lambda: t.path() == physical(BASE / 'other'), 'open second location')
+    arrival = CHILD / 'lab' / 'arrival'
+    relative = arrival.relative_to(BASE)
+    arrival.write_text('one')
+    activity(t, 'Added', relative)
+    arrival.write_text('two')
+    activity(t, 'Edited', relative)
+    replacement = BASE.parent / 'saved'
+    replacement.write_text('six')
+    signal = CHILD / 'ready'
+    signal.touch()
+    activity(t, 'Added', signal.relative_to(BASE))
+    replacement.replace(arrival)
+    activity(t, 'Edited', relative)
+    arrival.rename(BASE.parent / 'archived')
+    activity(t, 'Removed', relative)
+    arrival.touch()
+    activity(t, 'Added', relative)
+    t.send(b'-')
+    t.wait_for(lambda: t.path() == physical(BASE), 'return to previous place')
+    if 'other/' not in selected(t) or any('arrival' in row for row in t.view()):
+        raise AssertionError(f'previous selection or fold was lost: {t.view()!r}')
+    select_name(t, 'a child')
+    t.send(b' ')
+    if not any('arrival' in row and 'Added' in row for row in t.view()):
+        raise AssertionError('reopening a folded branch missed the new child')
+    t.send(b'm')
+    submit(t, str(OUTSIDE))
+    t.wait_for(lambda: t.path() == physical(OUTSIDE) and t.screen.rows()[-3].startswith(('Live','Polling')),
+               'external displayed directory is ready')
+    if not t.view()[1].startswith('Compact'):
+        raise AssertionError('navigation changed the selected Compact mode')
+    (BASE / 'still-watching').touch()
+    activity(t, 'Added', 'still-watching')
+    external = OUTSIDE / 'outside-file'
+    external.touch()
+    activity(t, 'Added', external)
+    t.send(b'c\r')
+    if 'outside-file' not in selected(t):
+        raise AssertionError('external changed file reveal missed focus')
+    t.send(b'\x1b[D')
+    if 'target/' not in selected(t):
+        raise AssertionError('parent navigation did not focus departed child')
+    return 'jumped across siblings, restored folds and focus, monitored both launch and external view'
+
+
+def live_editor(t):
+    select_name(t, 'other')
+    t.send(b'g')
+    t.send(b'unsubmitted')
+    prior = t.view()
+    (BASE / 'file.txt').write_text('new contents')
+    activity(t, 'Edited', 'file.txt')
+    (BASE / '0-new').touch()
+    activity(t, 'Added', '0-new')
+    check_equal(t.rows()[-1], 'Path: unsubmitted', 'editor buffer after external change')
+    check_equal(t.view(), prior, 'tree and selection frozen during editing')
+    t.send(b'\x1b')
+    t.wait_for(lambda: any('0-new' in row for row in t.screen.rows()[2:-3]), 'apply deferred changes')
+    if 'other/' not in selected(t):
+        raise AssertionError('refresh after Esc lost focus')
+    t.send(b'?')
+    if not any('Tab' in row and 'folder' in row for row in t.view()):
+        raise AssertionError('help missing folder navigation')
+    t.send(b'\x1b')
+    if 'other/' not in selected(t):
+        raise AssertionError('closing help lost tree focus')
+    return 'tree and input stable across external changes, caught up on Esc, help retained focus'
+
+
+def live_root_recovery(t):
+    moved = BASE.parent / 'moved-root'
+    BASE.rename(moved)
+    try:
+        t.wait_for(lambda: 'unavailable' in t.screen.rows()[-3].lower(), 'root unavailable', 8)
+        t.send(b'c')
+        if not any('Waiting for a file change' in row for row in t.view()):
+            raise AssertionError('root outage reported false changes')
+        t.send(b'\x1b')
+    finally:
+        moved.rename(BASE)
+    t.wait_for(lambda: t.screen.rows()[-3].startswith(('Live', 'Polling'))
+               and 'unavailable' not in t.screen.rows()[-3].lower(), 'root available again', 8)
+    (BASE / 'after-restore').touch()
+    activity(t, 'Added', 'after-restore')
+    return 'missing root marked unavailable, history stayed empty, monitoring resumed'
+
+
+def live_scope_burst(t):
+    (BRANCH / 'private' / 'beyond-limit').touch()
+    (BASE / 'link' / 'symlink-target-only').touch()
+    for index in range(8):
+        (BASE / f'note-{index:02}').touch()
+    t.wait_for(lambda: all(any(f'note-{i:02}   + Added' in row for row in t.screen.rows()[2:-3])
+                           for i in range(8)), 'settled burst in tree', 8)
+    t.send(b'c')
+    seen = [row for row in t.view()[2:] if row.startswith(('> ', '  '))]
+    check_equal(sorted(row.split()[-1] for row in seen), [f'note-{i:02}' for i in range(8)],
+                'burst retained with no changes from below the limit or across a symlink')
+    for index in range(70):
+        (BASE / f'item-{index:02}').touch()
+    t.wait_for(lambda: '64 paths' in t.screen.rows()[1], 'history reaches its documented limit', 8)
+    last = BASE / 'latest-save'
+    last.touch()
+    activity(t, 'Added', last.name)
+    t.send(b'\x1b[H')
+    if not selected(t).endswith(last.name):
+        raise AssertionError('Home missed newest path after the bounded list overflowed')
+    first = selected(t)
+    t.send(b'\x1b[6~')
+    if first == selected(t): raise AssertionError('Page Down did not move through recent changes')
+    t.send(b'\x1b[5~')
+    check_equal(selected(t), first, 'Page Up returns to first change')
+    return 'burst retained, deeper writes omitted, history capped at 64 with newest path reachable'
+
+
 def exit_check(t):
     before = physical(BASE)
     code, after, raw = t.quit()
@@ -377,6 +725,18 @@ def main():
         ('edit', 'select row, edit Unicode and cancel', 'path and all list rows remain unchanged', steady),
         ('paste', 'split framing and UTF-8, then separate Enter', 'no early navigation; Enter opens path', paste_split),
         ('paste controls', 'framed newline and Escape, then Enter', 'no early navigation or quit; visible error', paste_control),
+        ('tree depth', 'expand a four-level fixture, toggle and enter its boundary', 'three levels and navigable boundary', tree_depth),
+        ('tree collapse', 'expand two branches, close and reopen a child, close its parent', 'stable selection and independent siblings', tree_collapse),
+        ('tree retry', 'rename selected directory and restore', 'live removal and recovery', tree_retry),
+        ('tree empty and unavailable', 'empty and permission-denied children; retry', 'visible siblings and labelled branches', tree_empty_unavailable),
+        ('tree resize without color', 'shrink expanded tree to 40 columns by 10 rows, then enlarge', 'plain focus and depth hint remain visible', tree_resize_plain),
+        ('tree scroll', 'expand 32 children, move to last and open', 'selected nested path follows scrolling', tree_scroll),
+        ('tree expand at bottom', 'expand last visible row of a scrolled list', 'parent and first child both visible', tree_expand_at_bottom),
+        ('live operations', 'create, same-size save, atomic replace and remove', 'labels, stable focus, deduplication and reveal', live_file_changes),
+        ('live navigation', 'jump, fold, navigate outside and return', 'launch and displayed paths monitored', live_navigation),
+        ('live editing', 'change files while editing and open help', 'stable tree, input and focus', live_editor),
+        ('live root recovery', 'move monitored root away and back', 'unavailable status and recovered monitoring', live_root_recovery),
+        ('live bounds and burst', 'eight files plus two out-of-scope writes', 'eight tree labels and recent records', live_scope_burst),
         ('exit', 'quit through shell wrapper', 'exit 0, terminal attributes and shell directory restored', exit_check),
         ('editor exit', 'edit then Ctrl+C', 'exit 0 and terminal attributes restored', edit_ctrl_c),
     ]
@@ -384,7 +744,8 @@ def main():
     for name, inputs, expected, test in tests:
         term = None
         try:
-            term = Terminal()
+            prepare_fixture(FIXTURE / test.__name__)
+            term = Terminal(plain=test is tree_resize_plain)
             actual = test(term)
             passed += 1
             print(f'PASS {name} | input: {inputs} | expected: {expected} | actual: {actual}', flush=True)
