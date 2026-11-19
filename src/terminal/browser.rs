@@ -8,6 +8,7 @@ use std::sync::Arc;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Mode {
     Tree,
+    Search,
     Edit,
     Changes,
     Help,
@@ -27,6 +28,44 @@ struct Place {
     max: bool,
 }
 
+#[derive(Default)]
+pub(super) struct Search {
+    pub query: String,
+    pub matches: Vec<Entry>,
+    pub selected: usize,
+    pub scroll: usize,
+}
+
+impl Search {
+    fn refresh(&mut self, directory: &Directory) {
+        let matches = directory.matching_names(&self.query);
+        self.selected = self
+            .matches
+            .get(self.selected)
+            .and_then(|old| {
+                matches
+                    .iter()
+                    .position(|entry| entry.relative_path() == old.relative_path())
+            })
+            .unwrap_or(0);
+        self.matches = matches;
+    }
+}
+
+fn move_cursor(event: &Event, selected: &mut usize, count: usize, page: usize) -> bool {
+    let last = count.saturating_sub(1);
+    *selected = match event {
+        Event::Up => selected.saturating_sub(1),
+        Event::Down => (*selected + 1).min(last),
+        Event::Home => 0,
+        Event::End => last,
+        Event::PageUp => selected.saturating_sub(page),
+        Event::PageDown => (*selected + page).min(last),
+        _ => return false,
+    };
+    true
+}
+
 pub(super) struct Browser {
     pub directory: Directory,
     pub workspace: PathBuf,
@@ -34,10 +73,12 @@ pub(super) struct Browser {
     pub scroll: usize,
     pub viewport: usize,
     pub mode: Mode,
+    pub search: Search,
     pub text: String,
     pub diagnostic: String,
     pub live_status: String,
     pub recent: VecDeque<Change>,
+    pub latest_files: Vec<PathBuf>,
     editor_badges: VecDeque<Change>,
     pub change_index: usize,
     pub change_scroll: usize,
@@ -57,10 +98,12 @@ impl Browser {
             scroll: 0,
             viewport: 1,
             mode: Mode::Tree,
+            search: Search::default(),
             text: String::new(),
             diagnostic: String::new(),
             live_status: "Loading".into(),
             recent: VecDeque::new(),
+            latest_files: Vec::new(),
             editor_badges: VecDeque::new(),
             change_index: 0,
             change_scroll: 0,
@@ -124,6 +167,9 @@ impl Browser {
             } else {
                 self.focus(&position);
             }
+            if self.mode == Mode::Search {
+                self.search.refresh(&self.directory);
+            }
         }
     }
 
@@ -146,6 +192,7 @@ impl Browser {
             return activity;
         }
         self.live_status = update.status;
+        self.latest_files = update.latest_files;
         if let Some(snapshot) = update.snapshot {
             self.deferred = Some(snapshot);
             if self.mode != Mode::Edit {
@@ -196,6 +243,8 @@ impl Browser {
         }
         self.restore = saved;
         self.deferred = None;
+        self.search = Search::default();
+        self.latest_files.clear();
         self.mode = Mode::Tree;
         self.diagnostic.clear();
         self.live_status = "Loading".into();
@@ -282,23 +331,82 @@ impl Browser {
     }
 
     fn changes(&mut self, event: Event) {
-        let last = self.recent.len().saturating_sub(1);
+        if move_cursor(
+            &event,
+            &mut self.change_index,
+            self.recent.len(),
+            self.viewport,
+        ) {
+            return;
+        }
         match event {
-            Event::Up => self.change_index = self.change_index.saturating_sub(1),
-            Event::Down => self.change_index = (self.change_index + 1).min(last),
-            Event::Home => self.change_index = 0,
-            Event::End => self.change_index = last,
-            Event::PageUp => self.change_index = self.change_index.saturating_sub(self.viewport),
-            Event::PageDown => self.change_index = (self.change_index + self.viewport).min(last),
             Event::Char('c') | Event::Escape | Event::Left => self.mode = Mode::Tree,
             Event::Enter | Event::Right => self.reveal_change(),
             _ => {}
         }
     }
 
+    fn begin_search(&mut self, first: Option<char>) {
+        self.mode = Mode::Search;
+        self.search.query.extend(first);
+        self.search.refresh(&self.directory);
+    }
+
+    fn open_match(&mut self) {
+        let Some(entry) = self.search.matches.get(self.search.selected) else {
+            return;
+        };
+        let path = self.directory.path().join(entry.relative_path());
+        if entry.kind() == EntryKind::Directory
+            || (entry.kind() == EntryKind::Symlink && path.is_dir())
+        {
+            self.travel(path, None);
+        } else if let Some(parent) = path.parent() {
+            self.travel(parent.to_owned(), Some(PathBuf::from(entry.name())));
+        }
+    }
+
+    fn search_input(&mut self, event: Event) {
+        self.diagnostic.clear();
+        if move_cursor(
+            &event,
+            &mut self.search.selected,
+            self.search.matches.len(),
+            self.viewport,
+        ) {
+            return;
+        }
+        match event {
+            Event::Char(character) => self.search.query.push(character),
+            Event::Backspace => {
+                self.search.query.pop();
+            }
+            Event::Paste(text) if text.chars().any(char::is_control) => {
+                self.diagnostic = "Enter a name without control characters".into();
+                return;
+            }
+            Event::Paste(text) => self.search.query.push_str(&text),
+            Event::Escape => {
+                self.search = Search::default();
+                self.mode = Mode::Tree;
+                return;
+            }
+            Event::Enter | Event::Right => {
+                self.open_match();
+                return;
+            }
+            _ => return,
+        }
+        self.search.refresh(&self.directory);
+    }
+
     pub fn handle(&mut self, event: Event) -> bool {
         if matches!(event, Event::Interrupt) {
             return false;
+        }
+        if self.mode == Mode::Search {
+            self.search_input(event);
+            return true;
         }
         if let Event::Paste(text) = event {
             self.begin_edit();
@@ -332,22 +440,23 @@ impl Browser {
             return true;
         }
         // A cursor or fold choice made during loading takes precedence over saved focus.
+        if move_cursor(
+            &event,
+            &mut self.selected,
+            self.directory.entries().len(),
+            self.viewport,
+        ) {
+            self.restore = None;
+            return true;
+        }
         if matches!(
             event,
-            Event::Up
-                | Event::Down
-                | Event::Home
-                | Event::End
-                | Event::PageUp
-                | Event::PageDown
-                | Event::NextFolder
-                | Event::PreviousFolder
-                | Event::Char(' ' | 'm')
+            Event::NextFolder | Event::PreviousFolder | Event::Char(' ' | 'm')
         ) {
             self.restore = None;
         }
-        let last = self.directory.entries().len().saturating_sub(1);
         match event {
+            Event::Char('/') => self.begin_search(None),
             Event::Char('g') => self.begin_edit(),
             Event::Char('c') => {
                 self.mode = Mode::Changes;
@@ -358,12 +467,6 @@ impl Browser {
                 self.mode = Mode::Help;
                 self.help_scroll = 0;
             }
-            Event::Up => self.selected = self.selected.saturating_sub(1),
-            Event::Down => self.selected = (self.selected + 1).min(last),
-            Event::Home => self.selected = 0,
-            Event::End => self.selected = last,
-            Event::PageUp => self.selected = self.selected.saturating_sub(self.viewport),
-            Event::PageDown => self.selected = (self.selected + self.viewport).min(last),
             Event::NextFolder => self.jump_folder(true),
             Event::PreviousFolder => self.jump_folder(false),
             Event::Char('m') => {
@@ -391,6 +494,7 @@ impl Browser {
                 }
             }
             Event::Left | Event::Backspace => self.parent(),
+            Event::Char(character) => self.begin_search(Some(character)),
             _ => {}
         }
         true

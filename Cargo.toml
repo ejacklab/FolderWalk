@@ -6,6 +6,10 @@ rust-version = "1.94"
 license = "MIT"
 description = "A small terminal directory browser for students learning Rust"
 
+[[bin]]
+name = "fwalk"
+path = "src/main.rs"
+
 [dependencies]
 rustix = { version = "=1.1.6", features = ["event", "fs", "termios"] }
 unicode-width = "=0.2.2"

@@ -42,20 +42,23 @@ pub(crate) struct Stamp {
     device: u64,
     inode: u64,
     mode: u32,
-    file: Option<(u64, i64, i64, i64, i64)>,
+    file: Option<FileStamp>,
+}
+
+#[derive(PartialEq, Eq)]
+struct FileStamp {
+    size: u64,
+    modified: (i64, i64),
+    changed: (i64, i64),
 }
 
 impl Stamp {
     fn from_metadata(metadata: &fs::Metadata) -> Self {
         // Child creation changes directory times. The child gets the activity row.
-        let file = (!metadata.is_dir()).then(|| {
-            (
-                metadata.len(),
-                metadata.mtime(),
-                metadata.mtime_nsec(),
-                metadata.ctime(),
-                metadata.ctime_nsec(),
-            )
+        let file = (!metadata.is_dir()).then(|| FileStamp {
+            size: metadata.len(),
+            modified: (metadata.mtime(), metadata.mtime_nsec()),
+            changed: (metadata.ctime(), metadata.ctime_nsec()),
         });
         Self {
             device: metadata.dev(),
@@ -69,6 +72,7 @@ impl Stamp {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EntryKind {
     Directory,
+    File,
     Symlink,
     Other,
 }
@@ -122,6 +126,8 @@ fn read_entries(
             (EntryKind::Directory, state)
         } else if file_type.is_symlink() {
             (EntryKind::Symlink, TreeState::Leaf)
+        } else if file_type.is_file() {
+            (EntryKind::File, TreeState::Leaf)
         } else {
             (EntryKind::Other, TreeState::Leaf)
         };
@@ -293,6 +299,23 @@ impl Directory {
         &self.visible
     }
 
+    pub(crate) fn matching_names(&self, query: &str) -> Vec<Entry> {
+        let needle = query.to_lowercase();
+        self.snapshot
+            .entries()
+            .iter()
+            .filter(|entry| {
+                needle.is_empty()
+                    || entry
+                        .name()
+                        .to_string_lossy()
+                        .to_lowercase()
+                        .contains(&needle)
+            })
+            .cloned()
+            .collect()
+    }
+
     pub(crate) fn go(&mut self, path: &Path) -> io::Result<()> {
         if path.as_os_str().is_empty() {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "Enter a path"));
@@ -327,5 +350,12 @@ impl Entry {
 
     pub(crate) fn stamp(&self) -> Option<&Stamp> {
         self.data.stamp.as_ref()
+    }
+
+    pub(crate) fn file_modified(&self) -> Option<(i64, i64)> {
+        if self.kind() != EntryKind::File {
+            return None;
+        }
+        Some(self.stamp()?.file.as_ref()?.modified)
     }
 }

@@ -12,7 +12,7 @@ were finalized against the integrated Linux build on 2026-11-18.
 | Data | The system shall list the current directory entries. | An existing entry is omitted from the navigable list. | Files, directories, hidden entries and symlinks are represented. | Problem statement and [design](design.md) |
 | Processing logic | The system shall navigate to a directory through the keyboard. | A student cannot open a selected directory or return to its parent. | A fixture child and its parent are both reachable. | Problem statement |
 | Processing logic | The system shall accept a typed or pasted directory path. | A path containing spaces cannot be submitted as one path. | A relative and an absolute path containing spaces reach the expected directory. | Problem statement and [design](design.md) |
-| Processing logic | The system shall treat a framed paste as path text until explicit submission. | Chunk boundaries, newline or Escape in a paste trigger navigation, cancellation, or quit. | Split the framing and a UTF-8 character across writes. No navigation occurs before a separate Enter. | [Design review](design-review.md) |
+| Processing logic | The system shall treat a framed paste in the tree or path editor as path text until explicit submission. | Chunk boundaries, newline or Escape in a paste trigger navigation, cancellation, or quit. | Split the framing and a UTF-8 character across writes. No navigation occurs before a separate Enter. | [Design review](design-review.md) |
 | Processing logic | The system shall keep the path and listing visible and steady while the student edits a path. | Editing changes the directory, selection, or list scroll position. | Visible path and list rows stay identical during edits at a fixed terminal size. | Problem statement and [design](design.md) |
 | Processing logic | The system shall follow physical symlink and parent traversal. | The parent of a followed link is taken relative to the link's containing directory. | A symlink opens its target and the target's physical parent is reachable. | [Design](design.md) |
 | Error and filter | The system shall retain the previous directory and listing on navigation failure. | A failed submission changes the listing or prevents recovery. | A visible error and editable input precede successful navigation after correction. | [Design](design.md) |
@@ -49,6 +49,17 @@ found for this interaction. It uses the existing terminal and filesystem.
 Business rule, configuration and specific kinds have none found for this
 interaction. It uses the current Linux terminal and filesystem.
 
+## Find files and folders by name and see the latest file changes
+
+| Kind | Requirement | Fails if | Minimum accepted | Source |
+|---|---|---|---|---|
+| Processing logic | The system shall filter file and folder names as the student edits a search. | A keystroke leaves a nonmatching entry in the results or an Enter key is needed to update them. | In a fixture with matching files and a folder, type a name fragment, narrow it to the files, then restore the folder with Backspace. | EJ’s live name search request |
+| Data | The system shall show the names of the five most recently modified regular files below the listing when five files and five display rows are available. | An older file displaces a newer file, a folder occupies a row, or a path appears twice. | Start with four files, add seven with known modification times, then save an older file and see it first. | EJ’s five latest changed files request and the [monitor design](design.md#live-file-changes) |
+| Integration | The system shall launch from an installed command with a name of at most six characters. | The command exceeds six characters or fails to launch the browser from another folder. | Resolve the command on PATH and open a fixture in a terminal. | EJ’s command name limit |
+
+Business rule, configuration, error and filter, and specific kinds have
+none found beyond the search behavior above.
+
 ## Let the student study and reproduce the project
 
 | Kind | Requirement | Fails if | Minimum accepted | Source |
@@ -70,8 +81,10 @@ prefix the selection with a greater-than sign and a space and mark
 directories with a trailing slash and symlinks with an at sign. A status
 such as `~ Edited` may follow the filename. On a normal-size terminal the
 activity row begins with Live or Polling once the first scan completes.
-The last two rows belong to hints or diagnostics and controls or path input. The
-path input starts with “Path: ”. These rows leave the entry viewport at
+The Recently modified heading marks the end of the tree or search results.
+The last two rows contain hints or diagnostics and controls or text input.
+The path input starts with “Path: ” and the search input starts with “Find: ”.
+These rows leave the entry viewport at
 the same size through editing and error recovery.
 
 Use [the design](design.md) for key bindings and physical path behavior.

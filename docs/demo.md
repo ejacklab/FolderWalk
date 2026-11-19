@@ -1,5 +1,14 @@
 # FolderWalk demo
 
+## Search while typing
+
+In this terminal, typing `/color` finds a folder and six files in the Vim
+runtime. The two `dircolors.vim` results show their parent folders. The
+panel below lists the five most recently modified files in the monitored
+folders, even when their names do not match the search.
+
+![Terminal showing seven matches for color and five recently modified files](demo-images/name-search.png)
+
 ## Notice a save while browsing another folder
 
 This recording opens a small course project with `docs/` and `src/` visible.
@@ -17,13 +26,13 @@ a terminal. Keep the example directory open in a second terminal.
 
 ```sh
 cargo build --locked
-folderwalk="$PWD/target/debug/folderwalk"
+fwalk="$PWD/target/debug/fwalk"
 mkdir -p .scratch
 project=$(mktemp -d "$PWD/.scratch/coursework.XXXXXX")
 mkdir "$project/docs" "$project/src"
 touch "$project/docs/outline.md" "$project/src/main.rs" "$project/README.md"
 echo "$project"
-(cd "$project" && FOLDERWALK_THEME=mixed "$folderwalk")
+(cd "$project" && FOLDERWALK_THEME=mixed "$fwalk")
 ```
 
 Open `src/` in FolderWalk. In the second terminal, change to the printed
@@ -39,7 +48,7 @@ These examples browse the installed Vim packages on Linux. From the checkout
 with the binary path set as above, run the following command.
 
 ```sh
-(cd /usr/share/vim/vim91/pack && FOLDERWALK_THEME=mixed "$folderwalk")
+(cd /usr/share/vim/vim91/pack && FOLDERWALK_THEME=mixed "$fwalk")
 ```
 
 Max view initially shows `dist/`, its `opt/` directory, packages such as
@@ -68,7 +77,7 @@ run `asciinema play live-folder-travel.cast` with the downloaded file.
 The following examples use the Linux time-zone database.
 
 ```sh
-(cd /usr/share/zoneinfo && "$folderwalk")
+(cd /usr/share/zoneinfo && "$fwalk")
 ```
 
 Select `Africa/` and press Enter to open it.

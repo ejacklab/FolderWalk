@@ -23,6 +23,6 @@ jobs:
       - name: Run Cargo tests
         run: cargo test --locked
       - name: Exercise the terminal application
-        run: python3 tests/terminal_test.py target/debug/folderwalk
+        run: python3 tests/terminal_test.py target/debug/fwalk
       - name: Build documentation
         run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps

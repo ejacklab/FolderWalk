@@ -1,5 +1,28 @@
 # FolderWalk test report
 
+## Live name search and recent files
+
+The installed `fwalk` release passed all 25 Linux pseudo-terminal cases.
+The implementer added three cases to the 22 existing cases and adjusted
+the screen reader in the tests to distinguish the listing from the panel.
+The new cases check searching folded folders, choosing between duplicate
+names, editing a Unicode query during external changes, and ranking files
+by modification time at startup and after a save or removal.
+The ranking check uses filesystem timestamps and includes overlapping
+watch roots, tied timestamps, a directory, and a symlink. [Terminal tests](../tests/terminal_test.py)
+
+The implementer also launched `fwalk` by name at 80×24, resized to 40×10,
+and checked focus, a long Unicode query and terminal restoration. The
+Vim runtime example shows seven name matches and five recent files.
+[Terminal screenshot](demo-images/name-search.png)
+
+Rust formatting, all-target compilation, Clippy, the minimum-version
+build on Rust 1.94.0, the release build, strict rustdoc, the Cargo layout
+check, and offline lockfile resolution passed. Cargo built the unit test
+target and ran zero Rust unit tests. An installation into an empty Cargo
+install directory produced one executable named `fwalk`.
+These checks were run locally on x86_64 Linux. [CI commands](../.github/workflows/check.yml)
+
 ## Live Max view
 
 The independent QA worker ran the integrated debug and optimized Linux
@@ -118,7 +141,7 @@ Run from the project root:
 
 ```sh
 cargo build --locked
-python3 tests/terminal_test.py target/debug/folderwalk
+python3 tests/terminal_test.py target/debug/fwalk
 ```
 
 The lead used separate writable fixture directories under project scratch

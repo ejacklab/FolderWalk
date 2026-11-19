@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Black-box terminal acceptance checks: python3 terminal_test.py /path/to/folderwalk."""
+"""Black-box terminal acceptance checks: python3 terminal_test.py /path/to/fwalk."""
 import codecs
 import fcntl
 import os
@@ -153,6 +153,11 @@ class Screen:
     def rows(self):
         return [''.join(row).rstrip() for row in self.cells]
 
+    def view(self):
+        rows = self.rows()[:-3]
+        end = next((i for i, row in enumerate(rows) if row.startswith('Recently modified')), len(rows))
+        return rows[:end]
+
 
 class Terminal:
     def __init__(self, plain=False):
@@ -205,9 +210,12 @@ class Terminal:
         return self.screen.rows()
 
     def path(self): return self.rows()[0]
-    def view(self): return self.rows()[:-3]
+    def view(self):
+        self.drain(0.1)
+        return self.screen.view()
+
     def entries(self):
-        rows = self.rows()[1:-2]
+        rows = self.view()[1:]
         result = []
         for row in rows:
             if row.startswith('> '): row = row[2:]
@@ -253,7 +261,7 @@ def entry_name(text):
 
 
 def select_name(term, name, depth=0):
-    rows = term.rows()[1:-2]
+    rows = term.view()[1:]
     selected = next(i for i, row in enumerate(rows) if row.startswith('> '))
     # Strip the selection, indentation and two-cell disclosure before the name.
     offset = 2 + 2 * depth + 2
@@ -430,11 +438,11 @@ def tree_retry(t):
     moved = BASE.parent / 'moved'
     original.rename(moved)
     try:
-        t.wait_for(lambda: not any('other/' in row for row in t.screen.rows()[2:-3]),
+        t.wait_for(lambda: not any('other/' in row for row in t.screen.view()[2:]),
                    'missing directory disappears from live tree')
     finally:
         moved.rename(original)
-    t.wait_for(lambda: any('sibling.txt' in row for row in t.screen.rows()[2:-3]),
+    t.wait_for(lambda: any('sibling.txt' in row for row in t.screen.view()[2:]),
                'restored directory appears with its child')
     return 'live tree removed the missing folder and restored its contents on return'
 
@@ -460,7 +468,7 @@ def tree_empty_unavailable(t):
         select_name(t, 'locked', 1)
         t.send(b' ')
         locked.chmod(0o700)
-        t.wait_for(lambda: any('hidden-inside' in row for row in t.screen.rows()[2:-3]),
+        t.wait_for(lambda: any('hidden-inside' in row for row in t.screen.view()[2:]),
                    'unreadable child recovers after permission is restored', 8)
     finally:
         locked.chmod(0o700)
@@ -561,7 +569,7 @@ def live_file_changes(t):
     if not records[0].startswith('> ') or 'Edited' not in records[0]:
         raise AssertionError(f'most recent atomic save not selected: {records!r}')
     t.send(b'\r')
-    t.wait_for(lambda: any(row.startswith('> ') and '0-lecture' in row for row in t.screen.rows()[2:-3]),
+    t.wait_for(lambda: any(row.startswith('> ') and '0-lecture' in row for row in t.screen.view()[2:]),
                'reveal selected file')
     observe('Removed', path, lambda: path.rename(BASE.parent / 'archived'))
     if any('0-lecture' in row for row in t.view()[2:]):
@@ -636,7 +644,7 @@ def live_editor(t):
     check_equal(t.rows()[-1], 'Path: unsubmitted', 'editor buffer after external change')
     check_equal(t.view(), prior, 'tree and selection frozen during editing')
     t.send(b'\x1b')
-    t.wait_for(lambda: any('0-new' in row for row in t.screen.rows()[2:-3]), 'apply deferred changes')
+    t.wait_for(lambda: any('0-new' in row for row in t.screen.view()[2:]), 'apply deferred changes')
     if 'other/' not in selected(t):
         raise AssertionError('refresh after Esc lost focus')
     t.send(b'?')
@@ -671,7 +679,9 @@ def live_scope_burst(t):
     (BASE / 'link' / 'symlink-target-only').touch()
     for index in range(8):
         (BASE / f'note-{index:02}').touch()
-    t.wait_for(lambda: all(any(f'note-{i:02}   + Added' in row for row in t.screen.rows()[2:-3])
+    t.wait_for(lambda: any('note-00   + Added' in row for row in t.screen.view()[2:]), 'burst arrives')
+    t.send(b'\x1b[F')
+    t.wait_for(lambda: all(any(f'note-{i:02}   + Added' in row for row in t.screen.view()[2:])
                            for i in range(8)), 'settled burst in tree', 8)
     t.send(b'c')
     seen = [row for row in t.view()[2:] if row.startswith(('> ', '  '))]
@@ -694,6 +704,118 @@ def live_scope_burst(t):
     return 'burst retained, deeper writes omitted, history capped at 64 with newest path reachable'
 
 
+def search_names(t):
+    folder = BASE / 'quest'
+    folder.mkdir()
+    (folder / 'answers').touch()
+    for parent in [CHILD / 'lab', BASE / 'other']:
+        (parent / 'Quest notes.txt').touch()
+    t.send(b'm')
+    select_name(t, 'other')
+    original = selected(t)
+
+    def results():
+        return [row[4:] for row in t.view()[2:] if row.startswith(('> ', '  '))]
+
+    t.send(b'/q')
+    t.send(b'UeSt')
+    check_equal(results(), ['Quest notes.txt  ·  a child/lab', 'Quest notes.txt  ·  other', 'quest/'],
+                'case-insensitive basename matches in folded folders')
+    t.send(b' ')
+    check_equal(len(results()), 2, 'typing a space narrows to the two files')
+    t.send(b'X')
+    check_equal(results(), [], 'unmatched query has no selectable rows')
+    t.send(b'\r')
+    if 'No matching names' not in t.view() or '0 matches' not in t.view()[1]:
+        raise AssertionError('empty search did not retain its query and match count')
+    t.send(b'\x7f')
+    check_equal(len(results()), 2, 'backspace restores both matches')
+    t.send(b'\x1b')
+    check_equal(selected(t), original, 'Escape restores the original selection')
+    if not t.view()[1].startswith('Compact') or any('Quest notes' in row for row in t.view()):
+        raise AssertionError('search altered the compact tree or its folds')
+
+    t.send(b'otes')
+    t.send(b'\x1b[B\r')
+    check_equal(t.path(), physical(BASE / 'other'), 'result opens the correct containing folder')
+    if 'Quest notes.txt' not in selected(t):
+        raise AssertionError('matching file was not selected on return to the tree')
+    t.send(b'-')
+    t.send(b'/quest\x1b[F\r')
+    check_equal(t.path(), physical(folder), 'Enter on a matching folder')
+    return 'typed and erased a query, distinguished duplicate filenames, revealed a file and opened a folder'
+
+
+def search_updates(t):
+    t.send(b'/')
+    t.send(b'\x1b[200~' + 'ČESKÝ'.encode() + b'\x1b[201~')
+    check_equal(t.rows()[-1], 'Find: ČESKÝ', 'pasted query')
+    focus = selected(t)
+    if UNICODE.name not in focus:
+        raise AssertionError('mixed-case Unicode directory did not match')
+    edited = CHILD / 'A český note'
+    edited.touch()
+    t.wait_for(lambda: '2 matches' in t.screen.view()[1], 'new matching file appears without input')
+    check_equal(selected(t), focus, 'new match above the selected result preserves focus')
+    t.send(b'\x1b[200~bad\ntext\x1b[201~')
+    check_equal(t.rows()[-1], 'Find: ČESKÝ', 'control paste preserves query')
+    t.send(b'\x7f')
+    check_equal(t.rows()[-1], 'Find: ČESK', 'one Backspace removes a UTF-8 character')
+    edited.rename(BASE.parent / 'archived-note')
+    t.wait_for(lambda: '1 match' in t.screen.view()[1] and len(
+        [row for row in t.screen.view() if row.startswith(('> ', '  '))]) == 1, 'removed match disappears')
+    code, attributes, _ = t.quit(b'\x03')
+    check_equal((code, attributes), (0, t.before), 'Ctrl+C restores terminal while searching')
+    return 'Unicode paste, backspace, live insertion and removal, stable selection, and Ctrl+C passed'
+
+
+def recent_files(t):
+    def panel():
+        rows = t.screen.rows()
+        start = next(i for i, row in enumerate(rows) if row.startswith('Recently modified'))
+        paths = []
+        for row in rows[start + 1:-3]:
+            if row.startswith('│ '):
+                name, _, parent = row[2:].partition('  ·  ')
+                paths.append(pathlib.Path(parent) / name)
+        return paths
+
+    files = [BASE / '.hidden', BASE / 'file.txt', CHILD / 'lab/.readme', BASE / 'other/sibling.txt']
+
+    def newest():
+        ranked = sorted(files, key=lambda path: (-path.stat().st_mtime_ns, path))
+        return [path.relative_to(BASE) for path in ranked[:5]]
+
+    check_equal(panel(), newest(), 'files present at startup in modification time order')
+    t.send(b'/unmatched')
+    stamp = time.time_ns() + 10_000_000_000
+    for index in range(7):
+        folder = BASE if index % 2 else CHILD
+        path = folder / f'change-{6 - index}'
+        path.touch()
+        # Two timestamps tie; all other differences are below one second.
+        changed = stamp + min(index, 5)
+        os.utime(path, ns=(changed, changed))
+        files.append(path)
+    (BASE / 'directory-created-last').mkdir()
+    (BASE / 'latest-link').symlink_to(files[-1])
+    t.wait_for(lambda: panel() == newest(), 'exact five ordered files while search has zero matches')
+    oldest = files[0]
+    oldest.write_text('saved again')
+    os.utime(oldest, ns=(stamp + 10, stamp + 10))
+    t.wait_for(lambda: panel() == newest() and panel()[0] == pathlib.Path('.hidden'),
+               'saving an older file promotes it into the five')
+    t.send(b'\x1b')
+    submit(t, str(CHILD))
+    t.wait_for(lambda: t.screen.rows()[0] == physical(CHILD)
+               and t.screen.rows()[-3].startswith(('Live', 'Polling')) and panel() == newest(),
+               'overlapping monitored roots produce five distinct paths')
+    oldest.rename(BASE.parent / 'archived-file')
+    files.remove(oldest)
+    t.wait_for(lambda: panel() == newest(), 'missing file is replaced with the next newest')
+    return 'startup, exact five, nanosecond order, ties, edits, removals, and overlapping roots passed'
+
+
 def exit_check(t):
     before = physical(BASE)
     code, after, raw = t.quit()
@@ -714,7 +836,7 @@ def edit_ctrl_c(t):
 
 def main():
     if BINARY is None or not BINARY.is_file():
-        print('usage: python3 terminal_test.py /path/to/folderwalk', file=sys.stderr)
+        print('usage: python3 terminal_test.py /path/to/fwalk', file=sys.stderr)
         return 2
     tests = [
         ('startup', 'fixture with hidden file, directory, file and symlink', 'physical absolute path and all names', startup),
@@ -737,6 +859,9 @@ def main():
         ('live editing', 'change files while editing and open help', 'stable tree, input and focus', live_editor),
         ('live root recovery', 'move monitored root away and back', 'unavailable status and recovered monitoring', live_root_recovery),
         ('live bounds and burst', 'eight files plus two out-of-scope writes', 'eight tree labels and recent records', live_scope_burst),
+        ('name search', 'type, erase and navigate matches in a folded tree', 'matching file and folder names with their parents', search_names),
+        ('live name search', 'Unicode query and external writes', 'updated results and stable focus', search_updates),
+        ('recent files panel', 'existing and newly changed files in both roots', 'five distinct regular files in modification time order', recent_files),
         ('exit', 'quit through shell wrapper', 'exit 0, terminal attributes and shell directory restored', exit_check),
         ('editor exit', 'edit then Ctrl+C', 'exit 0 and terminal attributes restored', edit_ctrl_c),
     ]

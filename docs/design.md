@@ -84,6 +84,22 @@ Linux inotify observes individual directories and can miss some remote
 writes, so periodic reconciliation compares filesystem metadata too.
 [Linux inotify manual](https://man7.org/linux/man-pages/man7/inotify.7.html)
 
+The Recently modified panel uses the modification times already collected
+in each snapshot. The worker keeps the five newest regular files per root,
+merges those candidates by descending modification time, and breaks ties
+by path. Paths shared by the two roots appear once. The panel can therefore
+show existing files on the first scan and replace a deleted file with the
+next newest one.
+
+## Name search
+
+The browser filters the displayed directory’s cached snapshot by a
+case-insensitive substring of each basename. Searching a folded branch
+uses the same depth as its expanded preview. Matches have a separate
+selection and scroll position. A new snapshot preserves the selected
+match by its native path while it still matches. Selecting a file opens
+its parent and focuses that file. Escape restores the tree’s selection.
+
 ## Editor and display algorithm
 
 The terminal module provides run(directory: Directory) -> io::Result<()>.
@@ -99,9 +115,11 @@ single-path error. Failed submissions keep the buffer visible and editable. Succ
 ones return to browsing. A direct paste from browse mode starts a fresh
 path buffer.
 
-Show the absolute path first, then the tree and its live activity line.
-A footer row shows hints or diagnostics. The last row shows controls or the path
-input, prefixed with “Path: ”. Prefix selection
+Show the absolute path first, then the tree or search results. The Recently
+modified panel fits below them, above the live activity line. Its height
+depends on terminal size so updates leave the listing steady.
+A footer row shows hints or diagnostics. The last row shows controls,
+the path input, or the search input. Prefix selection
 with a greater-than sign and space. Suffix directories with a slash and
 symlinks with an at sign. Wrap the path across columns and clip entry lines
 to fit. When the terminal cannot fit the header and a usable viewport,

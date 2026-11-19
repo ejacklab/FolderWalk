@@ -2,7 +2,8 @@ use crate::navigation::{Entry, EntryKind, Snapshot, TreeState};
 use rustix::fd::OwnedFd;
 use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
 use rustix::io::Errno;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 use std::ffi::OsStr;
 use std::io;
 use std::mem::MaybeUninit;
@@ -14,6 +15,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub(crate) const RECENT_LIMIT: usize = 64;
+pub(crate) const LATEST_FILE_LIMIT: usize = 5;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ChangeKind {
@@ -32,6 +34,7 @@ pub(crate) struct Update {
     pub(crate) root: PathBuf,
     pub(crate) snapshot: Option<Arc<Snapshot>>,
     pub(crate) changes: Vec<Change>,
+    pub(crate) latest_files: Vec<PathBuf>,
     pub(crate) status: String,
 }
 
@@ -184,6 +187,38 @@ fn differences(
     }
 }
 
+fn latest_files<'a>(snapshots: impl Iterator<Item = &'a Snapshot>) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    for snapshot in snapshots {
+        // Keep only the five newest entries per root. The two roots can overlap.
+        let mut newest = BinaryHeap::with_capacity(LATEST_FILE_LIMIT + 1);
+        for entry in snapshot.entries() {
+            if let Some(modified) = entry.file_modified() {
+                newest.push((Reverse(modified), entry.relative_path()));
+                if newest.len() > LATEST_FILE_LIMIT {
+                    newest.pop();
+                }
+            }
+        }
+        candidates.extend(
+            newest
+                .into_iter()
+                .map(|(time, path)| (time, snapshot.path().join(path))),
+        );
+    }
+    candidates.sort_unstable();
+    let mut files = Vec::with_capacity(LATEST_FILE_LIMIT);
+    for (_, path) in candidates {
+        if !files.contains(&path) {
+            files.push(path);
+            if files.len() == LATEST_FILE_LIMIT {
+                break;
+            }
+        }
+    }
+    files
+}
+
 fn monitor(anchor: PathBuf, requests: Receiver<PathBuf>, output: &Mutex<Option<Update>>) {
     let mut view = anchor.clone();
     let mut watches = Watches::new();
@@ -248,6 +283,9 @@ fn monitor(anchor: PathBuf, requests: Receiver<PathBuf>, output: &Mutex<Option<U
                 "Live"
             };
             if force || view_changed || !changes.is_empty() || status != last_status {
+                let workspace =
+                    (anchor_available && anchor != view).then(|| previous[&anchor].as_ref());
+                let latest_files = latest_files(snapshot.as_deref().into_iter().chain(workspace));
                 let mut slot = output.lock().expect("monitor update lock poisoned");
                 let mut history = slot.take().map(|u| u.changes).unwrap_or_default();
                 history.retain(|item| !changes.contains_key(&item.path));
@@ -264,6 +302,7 @@ fn monitor(anchor: PathBuf, requests: Receiver<PathBuf>, output: &Mutex<Option<U
                     root: view.clone(),
                     snapshot,
                     changes: history,
+                    latest_files,
                     status: status.into(),
                 });
                 last_status = status.into();

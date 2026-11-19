@@ -1,7 +1,8 @@
 # FolderWalk
 
 FolderWalk is a small Rust terminal application for exploring directories.
-It opens a three-level tree and shows live file changes while you browse.
+It opens a three-level tree, filters files and folders as you type, and
+shows the five most recently modified files below the listing.
 Start it in your project folder to follow saves from your editor, Codex, or
 another terminal. It is written for university students who want a working
 program to read and study.
@@ -22,8 +23,8 @@ FolderWalk opens in the directory where it starts. To open another folder,
 build it first, save the binary's path, and launch it from that folder:
 
 ```sh
-folderwalk="$PWD/target/debug/folderwalk"
-(cd /usr/share/zoneinfo && "$folderwalk")
+fwalk="$PWD/target/debug/fwalk"
+(cd /usr/share/zoneinfo && "$fwalk")
 ```
 
 ## Install the command on WSL2
@@ -37,8 +38,8 @@ cargo install --path . --locked
 With Cargo's bin directory on your PATH, run FolderWalk from any directory:
 
 ```sh
-folderwalk
-FOLDERWALK_THEME=mixed folderwalk
+fwalk
+FOLDERWALK_THEME=mixed fwalk
 ```
 
 ## Navigate
@@ -51,6 +52,7 @@ rest of a branch and land on the next top-level folder.
 | Input | Action |
 |---|---|
 | Up or Down | Move the selection |
+| / | Search file and folder names as you type |
 | Tab or Shift+Tab | Jump to the next or previous top-level folder, wrapping at the ends |
 | Page Up, Page Down, Home, End | Move a page, or jump to the first or last row |
 | Space | Expand or collapse the selected folder in place |
@@ -79,7 +81,24 @@ the resolved path. A failed path leaves the current directory and listing
 visible, with an error above the input. Quitting returns to the launching
 shell at its original directory.
 
+## Find a file or folder
+
+Press `/` and type part of a name. Each keystroke filters the current
+directory’s preview, including folded branches. An ordinary letter also
+starts a search from the tree. Use `/` first when the name begins with a
+shortcut such as `g` or `q`. Matching ignores case. A result shows its
+parent folder so you can tell files with the same name apart.
+
+Use the arrow keys to select a match. Enter opens a folder or shows a file
+selected in its containing folder. Backspace widens the search and Escape
+returns to your place in the tree. You can also paste text into the search.
+
 ## Follow another process's edits
+
+The Recently modified panel lists up to five regular files from the monitored
+folders, newest first by modification time. It includes files saved before
+startup and refreshes while you browse or search. Short terminals show as
+many rows as fit.
 
 Leave FolderWalk open in a project and change a file from another terminal.
 The activity line shows the operation and path, such as `~ Edited  src/main.rs`.
@@ -139,7 +158,7 @@ cargo fmt --all --check
 cargo build --locked --all-targets
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
-python3 tests/terminal_test.py target/debug/folderwalk
+python3 tests/terminal_test.py target/debug/fwalk
 ```
 
 See the [requirements](docs/requirements.md), [design](docs/design.md), and
